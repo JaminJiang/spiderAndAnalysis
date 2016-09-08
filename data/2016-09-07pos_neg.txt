@@ -1,0 +1,6 @@
+http://www.chinagrain.cn/liangyou/2016/9/7/201697942935996.shtml	22.918824	pos
+http://www.chinagrain.cn/mianfen/2016/9/5/2016951474474111.shtml	21.18247	pos
+http://www.chinagrain.cn/mianfen/2016/9/6/2016961155641446.shtml	16.363297	pos
+http://www.chinagrain.cn/yumi/2016/9/7/20169714103889406.shtml	-4.855511	neg
+http://www.chinagrain.cn/vipnews/	-2.05668	neg
+http://www.chinagrain.cn/product/	-1.535369	neg

@@ -1,0 +1,241 @@
+#-*- coding: utf-8 -*-
+import sqlite3 as sqlite
+import re
+import math
+# 根据任何非空白字符进行分词处理
+def separatewords(self,text):
+    import jieba
+    seg_list = jieba.cut(text, cut_all=True)
+    return list(seg_list)
+    #splitter=re.compile('\\W*')
+    #return [s.lower() for s in splitter.split(text) if s!='']
+
+def getwords(doc):
+    import jieba
+    seg_list = jieba.cut(doc, cut_all=True)
+    words = list(seg_list)
+    ignorewords=set([u'黄豆',u'菜籽',u'大麦',u'小麦',u'豌豆',u'玉米',u'棉花',u'大米',u'豆粕',u'芝麻',u'大豆',u'水稻',u'豆油',u'菜油',u'棉粕',u'豆',u'油'])
+    words=[word for word in words if word not in ignorewords and word!='']
+    #for word in words:
+    #    print word," "
+    # Return the unique set of words only
+    return dict([(w,1) for w in words])
+
+class classifier:
+  def __init__(self,getfeatures,filename=None):
+    # Counts of feature/category combinations
+    self.fc={}
+    # Counts of documents in each category
+    self.cc={}
+    self.setdb('test.db')
+    self.getfeatures=getfeatures
+    
+  def setdb(self,dbfile):
+    self.con=sqlite.connect(dbfile)    
+    self.con.execute('create table if not exists fc(feature,category,count)')
+    self.con.execute('create table if not exists cc(category,count)')
+
+
+  def incf(self,f,cat):
+    count=self.fcount(f,cat)
+    if count==0:
+      self.con.execute("insert into fc values ('%s','%s',1)" 
+                       % (f,cat))
+    else:
+      self.con.execute(
+        "update fc set count=%d where feature='%s' and category='%s'" 
+        % (count+1,f,cat)) 
+  
+  def fcount(self,f,cat):
+    res=self.con.execute(
+      'select count from fc where feature="%s" and category="%s"'
+      %(f,cat)).fetchone()
+    if res==None: return 0
+    else: return float(res[0])
+
+  def incc(self,cat):
+    count=self.catcount(cat)
+    if count==0:
+      self.con.execute("insert into cc values ('%s',1)" % (cat))
+    else:
+      self.con.execute("update cc set count=%d where category='%s'" 
+                       % (count+1,cat))    
+
+  def catcount(self,cat):
+    res=self.con.execute('select count from cc where category="%s"'
+                         %(cat)).fetchone()
+    if res==None: return 0
+    else: return float(res[0])
+
+  def categories(self):
+    cur=self.con.execute('select category from cc');
+    return [d[0] for d in cur]
+
+  def totalcount(self):
+    res=self.con.execute('select sum(count) from cc').fetchone();
+    if res==None: return 0
+    return res[0]
+
+
+  def train(self,item,cat):
+    features=self.getfeatures(item)
+    # Increment the count for every feature with this category
+    for f in features:
+      self.incf(f,cat)
+
+    # Increment the count for this category
+    self.incc(cat)
+    self.con.commit()
+
+  def fprob(self,f,cat):
+    if self.catcount(cat)==0: return 0
+
+    # The total number of times this feature appeared in this 
+    # category divided by the total number of items in this category
+    return self.fcount(f,cat)/self.catcount(cat)
+
+  def weightedprob(self,f,cat,prf,weight=1.0,ap=0.5):
+    # Calculate current probability
+    basicprob=prf(f,cat)
+
+    # Count the number of times this feature has appeared in
+    # all categories
+    totals=sum([self.fcount(f,c) for c in self.categories()])
+
+    # Calculate the weighted average
+    bp=(weight*ap+(totals*basicprob))/(weight+totals)
+    return bp
+
+
+
+
+class naivebayes(classifier):
+  
+  def __init__(self,getfeatures):
+    classifier.__init__(self,getfeatures)
+    self.thresholds={}
+  
+  def docprob(self,item,cat):
+    features=self.getfeatures(item)   
+
+    # Multiply the probabilities of all the features together
+    p=1
+    for f in features: p*=self.weightedprob(f,cat,self.fprob)
+    return p
+
+  def prob(self,item,cat):
+    catprob=self.catcount(cat)/self.totalcount()
+    docprob=self.docprob(item,cat)
+    return docprob*catprob
+
+  def logdocprob(self,item,cat):
+    features=self.getfeatures(item)   
+
+    # Multiply the probabilities of all the features together
+    p=0.0
+    for f in features: p+=math.log(self.weightedprob(f,cat,self.fprob))
+    return p
+
+  def logprob(self,item,cat):
+    catprob=self.catcount(cat)/self.totalcount()
+    docprob=self.logdocprob(item,cat)
+    return docprob+math.log(catprob)
+  
+
+  def setthreshold(self,cat,t):
+    self.thresholds[cat]=t
+    
+  def getthreshold(self,cat):
+    if cat not in self.thresholds: return 1.0
+    return self.thresholds[cat]
+  
+  def classify(self,item,default=None):
+    probs={}
+    # Find the category with the highest probability
+    max=0.0
+    for cat in self.categories():
+      probs[cat]=self.prob(item,cat)
+      if probs[cat]>max: 
+        max=probs[cat]
+        best=cat
+
+    # Make sure the probability exceeds threshold*next best
+    for cat in probs:
+      if cat==best: continue
+      if probs[cat]*self.getthreshold(best)>probs[best]: return default
+    return best
+
+class fisherclassifier(classifier):
+  def cprob(self,f,cat):
+    # The frequency of this feature in this category    
+    clf=self.fprob(f,cat)
+    if clf==0: return 0
+
+    # The frequency of this feature in all the categories
+    freqsum=sum([self.fprob(f,c) for c in self.categories()])
+
+    # The probability is the frequency in this category divided by
+    # the overall frequency
+    p=clf/(freqsum)
+    
+    return p
+  def fisherprob(self,item,cat):
+    # Multiply all the probabilities together
+    p=1
+    features=self.getfeatures(item)
+    for f in features:
+      p*=(self.weightedprob(f,cat,self.cprob))
+
+    # Take the natural log and multiply by -2
+    fscore=-2*math.log(p)
+
+    # Use the inverse chi2 function to get a probability
+    return self.invchi2(fscore,len(features)*2)
+  def invchi2(self,chi, df):
+    m = chi / 2.0
+    sum = term = math.exp(-m)
+    for i in range(1, df//2):
+        term *= m / i
+        sum += term
+    return min(sum, 1.0)
+  def __init__(self,getfeatures):
+    classifier.__init__(self,getfeatures)
+    self.minimums={}
+
+  def setminimum(self,cat,min):
+    self.minimums[cat]=min
+  
+  def getminimum(self,cat):
+    if cat not in self.minimums: return 0
+    return self.minimums[cat]
+  def classify(self,item,default=None):
+    # Loop through looking for the best result
+    best=default
+    max=0.0
+    for c in self.categories():
+      print c
+      p=self.fisherprob(item,c)
+      # Make sure it exceeds its minimum
+      if p>self.getminimum(c) and p>max:
+        best=c
+        max=p
+    return best
+
+
+def sampletrain(cl):
+  cl.train(u'有所转好，采取挺油的策略，油价抗跌性较强，且外盘油脂恢复强进势头','good')
+  cl.train(u'但由于近期下游市场包装及调和用菜油备货量降低，菜油现货成交不佳，加之9月1日起进口菜籽杂质1%政策暂不实施，市场对后市的担忧心理随即增加，因此今日报价跟涨并不积极，预计报价涨幅将明显小于豆油及棕榈油等油种。 ','bad')
+  cl.train(u'市场需求疲软，国储陈豆供应充足，价格持续弱势，湖北中晚熟豆陆续大量上市，价格回落。','bad')
+  cl.train(u'短期内华北地区企业收购玉米将会缓步下调，市场价格仍有小幅震荡可能，随着夏季玉米上市，市场价格将正式进入弱势行情。 ','bad')
+  cl.train(u'上周五美盘大豆收涨，提振全球豆类商品期货，但由于国内豆粕库存量维持高位，再加上港口大豆充足等不利因素，使得油厂跟盘力度减弱。另外，预计美国大豆单产为每英亩49.50蒲式耳，大豆产量将达到41.27亿蒲式耳均高于8月份，使得美盘大豆承压，或将拖累国内豆粕市场价格。','bad')
+  cl.train(u'市场沽空心理增强，菜粕市场后市恐将供需失衡，现货厂商提价信心不足','bad')
+  cl.train(u'随着天气逐渐转暖，临储拍卖启动又延期、港口进口大豆封港以及南方市场小麦上市影响，短期内国内大豆市场维持稳定，但不排除未来若低价陈粮进入市场，大豆价格可能会被拉低，近期收购需谨慎.','bad')
+  cl.train(u'连带菜油现货价格上涨。一方面近期菜油库存及工厂开机率偏低，各厂均采取跟盘走势，今日或将跟随盘面上涨调高菜油价格。另一方面，近期连续上涨的行情，或将刺激下游补货量有所增多，这也在另一方面增强了今日厂家的挺价信心。所以今日菜油行情或将跟随盘面趋强运行。','good')
+  cl.train(u'今日国内棉油现货价格或将稳中趋强。主要原因在于：连盘豆油期货今日或将震荡走强，现货报价跟盘上涨，棉油厂商报价获得提振。由于近期国内部分油棉厂开始停机轮开，且受限于棉籽供应量较少，部分工厂选择延迟开机时间，全国范围内棉油现货供应或将依旧偏紧，因此价格获得支撑。','good')
+  cl.train(u'昨晚美盘大豆收涨，进而提振全球豆类商品期货，使得国内豆粕市场价格或将跟盘上调。近期国内豆粕库存压力不大，而且远月合同数量较多，油厂挺价意愿增强。另外，昨晚美盘大豆站位1100美分一线，后期仍有上涨空间。 ','good')
+  cl.train(u'今日国内豆油现货价格预计以上涨为主，幅度在30-50元/吨，原因在于：昨晚美盘大跌收涨幅度较大，美盘大跌成功站稳950美分一线，进而提振国内豆类产品期货。再加上国内豆油商业维持低位，使得部分油厂挺油意愿较强。但不排除，近期国储菜油抛储量较大，其价格已低于豆油价格，替代效果日益显着，长期来看或将抑制国内豆油的价格上涨。','good')
+  cl.train(u'另一方面，近日全国豆粕成交量保持15万吨左右，较前期有明显转好，且豆粕库存压力较前期有所缓解，使得厂商挺价信心逐渐恢复。再加上农业部监测数据显示，3月我国生猪存栏量达到37001万头，环比增加0.9%，养殖户补栏积极性有所提高，或将增加豆粕需求。因此，今日本网预计豆粕现货价格行情会延续上涨行情。','good')
+  cl.train(u'目前国内豆油现货市场购销清淡，虽然需求量缓慢转好，但无奈库存高企，对豆油市场始终如芒在背，拖累豆油价格，在失去外盘油脂利好支撑的情况下，今日国内油脂价格将呈稳中趋弱走势。 ','bad')
+  cl.train(u'今日国内菜油现货价格预计将下跌30-50元/吨。主要原因在于：昨日国际原油期货下跌，影响外围油脂期货整体趋弱，国内油脂期货今日将整体调整回落，菜油现货厂商报价承压。','bad')
+  cl.train(u'今日国内棕榈现货价格预计将调整回落20-50元/吨。主要原因在于：昨日国际原油期货收跌，影响外围油脂期货市场疲软，连盘棕榈油期货今日将趋弱运行，现货厂商报价跟盘下调。因产量和库存恢复不及预期的利好影响基本已被之前的涨势消化，预计马棕期价将以区间震荡为主。国内四季度订船尚显不足，低库存高基差格局仍将延续。','bad')
+  cl.train(u'今日国内豆油现货价格预计以上涨为主，幅度在50元/吨左右，原因在于：上周五晚美盘大豆收涨幅度较大，进而提振国内豆类产品期货。再加上上周五国际原油大涨5%以上接近40美元一线，或将带动全球油脂期货，使得国内豆油市场价格跟盘上调。','good')

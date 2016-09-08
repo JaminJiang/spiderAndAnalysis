@@ -1,0 +1,11 @@
+import searchengine
+from os import path
+import searchengine
+import matplotlib.pyplot as plt
+from wordcloud import WordCloud, STOPWORDS, ImageColorGenerator
+import datetime, calendar,os
+date=datetime.date.today()
+filepath="data/"+str(date)+"pos_neg.txt"
+generatePosNegFile(filepath)
+imgpath="data/"+str(date)+"word_cloud.jpg"
+generateFig(imgpath)
